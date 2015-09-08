@@ -6,6 +6,10 @@
 package com.ferdianto.simplechat;
 
 import java.io.BufferedReader;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileNotFoundException;
+import java.io.IOException;
 import java.io.InputStreamReader;
 import java.io.OutputStream;
 import java.io.UnsupportedEncodingException;
@@ -13,22 +17,45 @@ import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.security.MessageDigest;
+import java.security.PrivilegedAction;
 import java.security.SecureRandom;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.List;
+import java.util.Properties;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.LinkedBlockingQueue;
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.IvParameterSpec;
 import javax.crypto.spec.SecretKeySpec;
+import javax.security.auth.Subject;
+import javax.security.auth.callback.Callback;
+import javax.security.auth.callback.CallbackHandler;
+import javax.security.auth.callback.NameCallback;
+import javax.security.auth.callback.PasswordCallback;
+import javax.security.auth.callback.UnsupportedCallbackException;
+import javax.security.auth.login.LoginContext;
+import javax.security.auth.login.LoginException;
+import org.ietf.jgss.GSSContext;
+import org.ietf.jgss.GSSException;
+import org.ietf.jgss.GSSManager;
+import org.ietf.jgss.GSSName;
+import org.ietf.jgss.Oid;
 
 /**
  *
  * @author ferdhie
  */
 public class SimpleChat implements Runnable {
+    static final String KERBEROS_REALM = "KERBEROS.COM";
+    static final String KERBEROS_KDC = "KERBEROS.COM";
+    static final String SERVICE_PRINCIPAL_NAME = "chat";
+    
+    private static Oid krb5Oid;
+    private Subject subject;
+    private byte[] serviceTicket;
+    
     static final int SERVER_PORT = 24281;
     static final String SERVER_KEY = "bismillah";
     static SecretKey serverSecret = null;
@@ -60,6 +87,59 @@ public class SimpleChat implements Runnable {
             username=null;
         }
     }
+    
+    private void login(String username, String password) throws GSSException, LoginException, IOException {
+        
+        Properties props = new Properties();
+        props.load( new FileInputStream( "client.properties"));
+      
+        // Setup up the Kerberos properties.
+        System.setProperty( "sun.security.krb5.debug", "true");
+        System.setProperty( "java.security.krb5.realm", props.getProperty("realm")); 
+        System.setProperty( "java.security.krb5.kdc", props.getProperty("kdc"));
+        System.setProperty( "java.security.auth.login.config", new File("jaas.conf").getAbsolutePath());
+        System.setProperty( "javax.security.auth.useSubjectCredsOnly", "true");
+        // Oid mechanism = use Kerberos V5 as the security mechanism.
+        krb5Oid = new Oid( "1.2.840.113554.1.2.2");
+        LoginContext loginCtx = null;
+          // "Client" references the JAAS configuration in the jaas.conf file.
+          loginCtx = new LoginContext( "Client", new LoginCallbackHandler( username, password));
+          loginCtx.login();
+          this.subject = loginCtx.getSubject();
+          System.err.println(subject);
+
+          // Request the service ticket.
+          initiateSecurityContext( SERVICE_PRINCIPAL_NAME );
+          // Write the ticket to disk for the server to read.
+          //encodeAndWriteTicketToDisk( client.serviceTicket, "./security.token");
+          //System.out.println( "Service ticket encoded to disk successfully");
+        
+        
+    }
+    
+   private void initiateSecurityContext( String servicePrincipalName) throws GSSException {
+    GSSManager manager = GSSManager.getInstance();
+    GSSName serverName = manager.createName( servicePrincipalName, GSSName.NT_HOSTBASED_SERVICE);
+    final GSSContext context = manager.createContext( serverName, krb5Oid, null, GSSContext.DEFAULT_LIFETIME);
+    // The GSS context initiation has to be performed as a privileged action.
+    this.serviceTicket = Subject.doAs( subject, new PrivilegedAction<byte[]>() {
+      @Override
+      public byte[] run() {
+        try {
+          byte[] token = new byte[0];
+          // This is a one pass context initialisation.
+          context.requestMutualAuth( false);
+          context.requestCredDeleg( false);
+          return context.initSecContext( token, 0, token.length);
+        }
+        catch ( GSSException e) {
+          e.printStackTrace();
+          return null;
+        }
+      }
+    });
+ 
+  }
     
     private void doServer() throws Exception {
         InetSocketAddress address = (InetSocketAddress) socket.getRemoteSocketAddress();
@@ -146,11 +226,18 @@ public class SimpleChat implements Runnable {
             //register//login//online
             String uname = arguments.get(0);
             String pw = arguments.get(1);
-            if (username!=null)
-                onlineUsers.remove(username);
-            username=uname;
-            onlineUsers.put(username, this);
-            respond("OK");
+            try {
+                login(uname, pw);
+                if (username!=null)
+                    onlineUsers.remove(username);
+                username=uname;
+                onlineUsers.put(username, this);
+                respond("OK");
+            } catch(LoginException le) {
+                respond("ERROR invalid user/pwd: " + le.getMessage());
+            } catch(GSSException ge) {
+                respond("ERROR invalid user/pwd: " + ge.getMessage());
+            }
         } else if (cmd.equals("LOGOUT")) {
             //offline
             logout();
@@ -259,6 +346,51 @@ public class SimpleChat implements Runnable {
             hexChars[j * 2 + 1] = hexArray[v & 0x0F];
         }
         return new String(hexChars);
+    }
+    
+    static class LoginCallbackHandler implements CallbackHandler {
+        public LoginCallbackHandler() {
+        super();
+      }
+
+      public LoginCallbackHandler( String name, String password) {
+        super();
+        this.username = name;
+        this.password = password;
+      }
+
+      public LoginCallbackHandler( String password) {
+        super();
+        this.password = password;
+      }
+
+      private String password;
+      private String username;
+
+      /**
+       * Handles the callbacks, and sets the user/password detail.
+       * @param callbacks the callbacks to handle
+       * @throws IOException if an input or output error occurs.
+       */
+        @Override
+      public void handle( Callback[] callbacks)
+          throws IOException, UnsupportedCallbackException {
+
+        for ( int i=0; i<callbacks.length; i++) {
+          if ( callbacks[i] instanceof NameCallback && username != null) {
+            NameCallback nc = (NameCallback) callbacks[i];
+            nc.setName( username);
+          }
+          else if ( callbacks[i] instanceof PasswordCallback) {
+            PasswordCallback pc = (PasswordCallback) callbacks[i];
+            pc.setPassword( password.toCharArray());
+          }
+          else {
+            /*throw new UnsupportedCallbackException(
+            callbacks[i], "Unrecognized Callback");*/
+          }
+        }
+      }
     }
 
 }
