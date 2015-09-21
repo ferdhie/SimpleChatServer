@@ -66,7 +66,7 @@ public class SimpleChatClient {
         }.set(s).start();
         
         PrintWriter pw = new PrintWriter(new OutputStreamWriter( s.getOutputStream() ));
-        pw.print(encode("LOGIN muklis ******"));
+        pw.print(encode("LOGIN test test"));
         pw.flush();
         
         pw.print(encode("PING"));
@@ -75,7 +75,6 @@ public class SimpleChatClient {
         pw.print(encode("LIST"));
         pw.flush();
         
-        System.in.read();
         s.close();
         
     }

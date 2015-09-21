@@ -48,8 +48,8 @@ import org.ietf.jgss.Oid;
  * @author ferdhie
  */
 public class SimpleChat implements Runnable {
-    static final String KERBEROS_REALM = "KERBEROS.COM";
-    static final String KERBEROS_KDC = "KERBEROS.COM";
+    static final String KERBEROS_REALM = "MUKHLISON.COM";
+    static final String KERBEROS_KDC = "MUKHLISON.COM";
     static final String SERVICE_PRINCIPAL_NAME = "chat";
     
     private static Oid krb5Oid;
@@ -197,14 +197,14 @@ public class SimpleChat implements Runnable {
     
     public void respond(String msg) throws Exception {
         
-        log("outgoing message ", msg);
+        //log("outgoing message ", msg);
         byte[] plaintext = msg.getBytes();
         
         byte[] encrypted = encrypt(serverSecret, plaintext);
         log("encrypted message ", hex(encrypted));
         
         String base64 = Base64.encode(encrypted);
-        log("base64 out message ", base64);
+        //log("base64 out message ", base64);
         
         base64 = base64.replace("\n", "").replace("\r", "");
         base64 = base64 + "\r\n";
